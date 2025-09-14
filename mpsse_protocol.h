@@ -50,6 +50,12 @@ public:
   int MpsseSync();
   int MpsseSetClockFreq(float khz, bool three_phase, bool adaptive);
 
+  // State:     1=high   0=low
+  // Direction: 1=output 0=input
+  // bit[x]:    ADBUSx
+  // Return -1 if error.
+  int MpsseSetLowerPins(uint8_t state, uint8_t dir);
+
 private:
   struct ftdi_context *const context_;
   uint8_t buffer_[kBufferSize];
@@ -131,8 +137,7 @@ private:
   explicit MpsseI2c(FtdiDevice* dev) : dev_(dev) {}
 
   // For comments on private functions, see cpp file.
-  int InitializeI2cPins();
-  int SetLowerPins(uint8_t state, uint8_t dir);
+  int InitializePins();
 
   FtdiDevice* const dev_;
 };

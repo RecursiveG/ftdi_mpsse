@@ -156,6 +156,17 @@ int FtdiDevice::MpsseSetClockFreq(float khz, bool three_phase, bool adaptive) {
   return ret;
 }
 
+int FtdiDevice::MpsseSetLowerPins(uint8_t state, uint8_t dir) {
+  uint8_t cmd[] = {SET_BITS_LOW, state, dir};
+
+  int err = 0;
+  err = BufferBytes(cmd);
+  if (err) return -1;
+  err = BufferFlush();
+  if (err) return -1;
+  return 0;
+}
+
 std::unique_ptr<MpsseI2c> MpsseI2c::Create(FtdiDevice *dev, float scl_khz) {
   int err = ftdi_set_bitmode(dev->context(), 0xff, BITMODE_MPSSE);
   RETURN_IF(err != 0, nullptr, "ftdi_set_bitmode() failed: %d", err);
@@ -168,7 +179,7 @@ std::unique_ptr<MpsseI2c> MpsseI2c::Create(FtdiDevice *dev, float scl_khz) {
   err = dev->MpsseSetClockFreq(scl_khz, /*three_phase=*/true, /*adaptive=*/false);
   RETURN_IF(err != 0, nullptr, "MpsseSetClockFreq() failed: %d", err);
 
-  err = ret->InitializeI2cPins();
+  err = ret->InitializePins();
   RETURN_IF(err != 0, nullptr, "InitializeI2cPins() failed: %d", err);
 
   return ret;
@@ -182,39 +193,24 @@ MpsseI2c::~MpsseI2c() {
 }
 
 // Postcond: SDA & SCL both hold high.
-int MpsseI2c::InitializeI2cPins() {
+int MpsseI2c::InitializePins() {
   dev_->BufferClear();
-  return SetLowerPins(
+  return dev_->MpsseSetLowerPins(
     /*state=*/ 0b0000'0011,
     /*dir=*/   0b0000'0011
   );
 }
 
-// State:     1=high   0=low
-// Direction: 1=output 0=input
-// bit[x]:    ADBUSx
-// Return -1 if error.
-int MpsseI2c::SetLowerPins(uint8_t state, uint8_t dir) {
-  uint8_t cmd[] = {SET_BITS_LOW, state, dir};
-
-  int err = 0;
-  err = dev_->BufferBytes(cmd);
-  if (err) return -1;
-  err = dev_->BufferFlush();
-  if (err) return -1;
-  return 0;
-}
-
 int MpsseI2c::Start() {
   // First set SDA to LOW, indicates start
-  if (SetLowerPins(
+  if (dev_->MpsseSetLowerPins(
     0b00000001,
     0b00000011
   )) return -1;
 
   // Then bring SCL to low prepare for data tx, time gap is needed.
   // Time gap is established by two separate write calls.
-  if (SetLowerPins(
+  if (dev_->MpsseSetLowerPins(
     0b00000000,
     0b00000011
   )) return -1;
@@ -224,17 +220,17 @@ int MpsseI2c::Start() {
 
 int MpsseI2c::Restart() {
   // Time gap is needed at all places.
-  if (SetLowerPins(0b00000010, 0b00000011)) return -1;
-  if (SetLowerPins(0b00000011, 0b00000011)) return -1;
-  if (SetLowerPins(0b00000001, 0b00000011)) return -1;
-  if (SetLowerPins(0b00000000, 0b00000011)) return -1;
+  if (dev_->MpsseSetLowerPins(0b00000010, 0b00000011)) return -1;
+  if (dev_->MpsseSetLowerPins(0b00000011, 0b00000011)) return -1;
+  if (dev_->MpsseSetLowerPins(0b00000001, 0b00000011)) return -1;
+  if (dev_->MpsseSetLowerPins(0b00000000, 0b00000011)) return -1;
   return 0;
 }
 
 int MpsseI2c::Stop() {
   // Time gap is needed at all places.
-  if (SetLowerPins(0b00000001, 0b00000011)) return -1;
-  if (SetLowerPins(0b00000011, 0b00000011)) return -1;
+  if (dev_->MpsseSetLowerPins(0b00000001, 0b00000011)) return -1;
+  if (dev_->MpsseSetLowerPins(0b00000011, 0b00000011)) return -1;
   return 0;
 }
 
