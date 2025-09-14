@@ -7,7 +7,7 @@ Implemented protocols:
 - I<sup>2</sup>C
   - Example: MCP9808 temperature sensor.
 - WS2812B LED
-  - Not tested yet.
+  - Tested on a light strip with 144 LEDs.
 
 Note about USB device address:
 - Every USB device is on some bus, and is assigned a unique device number on that bus.
