@@ -6,6 +6,8 @@ This repo uses [libftdi1](https://www.intra2net.com/en/developer/libftdi/index.p
 Implemented protocols:
 - I<sup>2</sup>C
   - Example: MCP9808 temperature sensor.
+- WS2812B LED
+  - Not tested yet.
 
 Note about USB device address:
 - Every USB device is on some bus, and is assigned a unique device number on that bus.

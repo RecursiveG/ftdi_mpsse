@@ -45,6 +45,9 @@ public:
   // Return -1 if error, 0 if success
   int Read(void* buf, int32_t len);
 
+  // Wait for "Transmitter empty" bit set. Return 0 if ok, -1 if error, -2 if timeout.
+  int WaitTransmitterEmpty(uint32_t timeout_ms = 1000);
+
   // Synchronize the MPSSE state, must be run before other MPSSE commands.
   // Note the implementation isn't identical to AN_135
   int MpsseSync();
@@ -138,6 +141,32 @@ private:
 
   // For comments on private functions, see cpp file.
   int InitializePins();
+
+  FtdiDevice* const dev_;
+};
+
+// Only one pin required.
+// DATA <- ADBUS1
+// The frequency is set to 2.5MHz and use the data pin to simulate the required timing.
+// - "0 code" == 0b100 == 0.4us then 0.8us
+// - "1 code" == 0b110 == 0.8us then 0.4us
+// - "reset"  == at least 125 zeros.
+class MpsseWs2812b {
+public:
+  // It should be obvious that it's invalid to interleave the use of the same FtdiDevice.
+  static std::unique_ptr<MpsseWs2812b> Create(FtdiDevice *dev);
+  virtual ~MpsseWs2812b();
+
+  // Change color of multiple LEDs. One number for one LED, in that order.
+  // Every number represent the RGB value of that LED. Top 8 bits are ignored. Blue in LSB.
+  int SendFrame(std::span<uint32_t> rgb);
+private:
+  explicit MpsseWs2812b(FtdiDevice* dev) : dev_(dev) {}
+
+  // Expand one byte to 3 bytes. 0 map to 0b100, 1 map to 0b110. buf is assumed to have size 3.
+  static void ExpandByte(uint8_t byte, uint8_t buf[]);
+  // Send raw data, all bits must be either "100" or "110". In GRB order. Last bit must be zero.
+  int SendRaw(std::span<uint8_t> raw);
 
   FtdiDevice* const dev_;
 };
