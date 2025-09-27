@@ -38,7 +38,7 @@ public:
   static constexpr int kBufferSize = 512;
   void BufferClear();
   int BufferByte(uint8_t data);
-  int BufferBytes(std::span<uint8_t> data);
+  int BufferBytes(std::span<const uint8_t> data);
   int BufferFlush();
 
   // Wrapper around ftdi_read_data()
@@ -159,16 +159,50 @@ public:
 
   // Change color of multiple LEDs. One number for one LED, in that order.
   // Every number represent the RGB value of that LED. Top 8 bits are ignored. Blue in LSB.
-  int SendFrame(std::span<uint32_t> rgb);
+  int SendFrame(std::span<const uint32_t> rgb);
 private:
   explicit MpsseWs2812b(FtdiDevice* dev) : dev_(dev) {}
 
   // Expand one byte to 3 bytes. 0 map to 0b100, 1 map to 0b110. buf is assumed to have size 3.
   static void ExpandByte(uint8_t byte, uint8_t buf[]);
   // Send raw data, all bits must be either "100" or "110". In GRB order. Last bit must be zero.
-  int SendRaw(std::span<uint8_t> raw);
+  int SendRaw(std::span<const uint8_t> raw);
 
   FtdiDevice* const dev_;
+};
+
+// Pins for SPI
+// ADBUS0: CLK. Connect to CLK pin on peripherals.
+// ADBUS1: MOSI. Connect to MOSI or SDI (serial data in) pin on peripherals.
+// ADBUS2: MISO. Connect to MISO or SDO (serial data out) pin on peripherals.
+// ADBUS3: Chip select. TODO: support multiple CS pins.
+class MpsseSpi {
+public:
+  // CPOL: clock polarity: 0-clock idle low, 1-clock idle high
+  // CPHA: clock phase   : 0-first half of clock is idle, then inverted.
+  //                       1-first half of clock is inverted, then idle.
+  // ref: https://www.analog.com/en/resources/analog-dialogue/articles/introduction-to-spi-interface.html
+  //
+  // clk_mhz: The desired clock frequency in MHz.
+  //          Due to FTDI chip restriction, if cpha == 1, the clock duty cycle is not 50/50.
+  //          The clock period should >= 3x pause width. (i.e. clk_mhz <= max freq * 2/3)
+  static std::unique_ptr<MpsseSpi> Create(FtdiDevice *dev, int cpol, int cpha, float clk_mhz=1);
+  virtual ~MpsseSpi();
+
+  // Pull down CS, transmit some bytes then immediately read some bytes, then pull up CS.
+  // Can not be both zero length. If a length is zero, the corresponding data can be null.
+  //
+  // tx_len: bytes to transmit, can be zero.
+  // rx_len: bytes to receive, can be zero.
+  int Transaction(const void* tx_data, int tx_len, void* rx_data, int rx_len);
+
+private:
+  explicit MpsseSpi(FtdiDevice* dev, int cpol, int cpha) :
+    dev_(dev), cpol_(cpol), cpha_(cpha) {}
+
+  FtdiDevice* const dev_;
+  const int cpol_;
+  const int cpha_;
 };
 
 } // namespace mpsse_protocol
