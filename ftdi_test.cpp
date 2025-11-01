@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 using ::testing::ElementsAre;
+using ::testing::SizeIs;
 typedef std::unique_ptr<struct ftdi_context, void (*)(struct ftdi_context *)>
     UniqueFtdiContext;
 
@@ -76,6 +77,20 @@ TEST(FtdiTest, MpsseInvalidCmdResponse) {
   ASSERT_THAT(ftdi_read(dev.get()), ElementsAre(0xfa, 0xaa));
 }
 
+// Test MpsseInvalidCmdResponse, but the response is discarded using tciflush
+TEST(FtdiTest, MpsseInvalidCmdResponseButDiscardedWithTciflush) {
+  auto dev = OpenDevice(SET_MPSSE);
+
+  // Make sure we have no data to read
+  ASSERT_THAT(ftdi_read(dev.get()), SizeIs(0));
+  // Send an invalid command
+  ASSERT_EQ(ftdi_write(dev.get(), {0xaa}), 1);
+  // FIXME: what happens if the flush happens before the data is written back?
+  ASSERT_EQ(ftdi_tciflush(dev.get()), 0);
+  // MPSSE returns us zero bytes
+  ASSERT_THAT(ftdi_read(dev.get()), SizeIs(0));
+}
+
 // Repeatedly writes 512B. Delay suddenly increases after 4K.
 // FT2232 has internal buffer of 4K.
 // Writes will be blocked if full.
@@ -109,6 +124,54 @@ TEST(FtdiTest, SplitCommand) {
   ASSERT_EQ(ftdi_write(dev.get(), {0x00}), 1);
   // Will get data back.
   ASSERT_EQ(ftdi_read_data(dev.get(), buf.get(), 512), 1);
+}
+
+// check the modem_status u16 at 4 points
+// - just started, all idle
+// - a command in progress
+// - command finished, but data not read
+// - after data read.
+// It looks like all status returned is 0x6032. I don't know why.
+TEST(FtdiTest, SplitCommandModemStatus) {
+  auto dev = OpenDevice(SET_MPSSE);
+  const uint16_t expected_status = 0x6032;
+  uint16_t status = 0;
+
+  // Make sure we have no data to read
+  ASSERT_THAT(ftdi_read(dev.get()), SizeIs(0));
+  // Check status when idle
+  ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &status), 0);
+  EXPECT_EQ(status, expected_status);
+  // std::printf("Idle status %#06x\n", status);
+
+  // 0x22 0x00 = read one bit
+  // Write first byte
+  ASSERT_EQ(ftdi_write(dev.get(), {0x22}), 1);
+  // Shouldn't have any data yet.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_THAT(ftdi_read(dev.get()), SizeIs(0));
+  // check status
+  status = 0;
+  ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &status), 0);
+  EXPECT_EQ(status, expected_status);
+  //std::printf("Blocked status %#06x\n", status);
+
+  // Write second byte
+  ASSERT_EQ(ftdi_write(dev.get(), {0x00}), 1);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  // Check status
+  status = 0;
+  ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &status), 0);
+  EXPECT_EQ(status, expected_status);
+  // std::printf("Before read status %#06x\n", status);
+
+  // Now get data back and check status
+  ASSERT_THAT(ftdi_read(dev.get()), SizeIs(1));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  status = 0;
+  ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &status), 0);
+  EXPECT_EQ(status, expected_status);
+  // std::printf("After read status %#06x\n", status);
 }
 
 // According to the datasheet, the HW structure is like
@@ -169,4 +232,26 @@ TEST(FtdiTest, SplitCommandNotPersistsAcrossResetBitbangMode) {
   ASSERT_EQ(ftdi_write(dev.get(), {0xaa, 0x00}), 2);
   // Now we get data back, but the two bytes are treated as two unknown commands
   ASSERT_THAT(ftdi_read(dev.get()), ElementsAre(0xfa, 0xaa, 0xfa, 0x00));
+}
+
+// Test tx purge has no effect on partial commands
+TEST(FtdiTest, SplitCommandNotAffectedByTxPurge) {
+  auto buf = std::make_unique<uint8_t[]>(2048);
+  auto dev = OpenDevice(SET_MPSSE);
+
+  // Make sure we have no data to read
+  ASSERT_EQ(ftdi_read_data(dev.get(), buf.get(), 512), 0);
+  // 0x20 0xaa 0x00 = read 171 bytes
+  // Write first byte
+  ASSERT_EQ(ftdi_write(dev.get(), {0x20}), 1);
+  // Shouldn't read any data yet.
+  LOG(INFO) << "Waiting...";
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  ASSERT_EQ(ftdi_read_data(dev.get(), buf.get(), 512), 0);
+  // TX Purge
+  ASSERT_EQ(ftdi_tcoflush(dev.get()), 0);
+  // Write second and third byte
+  ASSERT_EQ(ftdi_write(dev.get(), {0xaa, 0x00}), 2);
+  // Now we get data back.
+  ASSERT_EQ(ftdi_read_data(dev.get(), buf.get(), 512), 171);
 }
