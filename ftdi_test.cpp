@@ -12,7 +12,9 @@
 #include <gtest/gtest.h>
 
 using ::testing::ElementsAre;
+using ::testing::IsEmpty;
 using ::testing::SizeIs;
+
 typedef std::unique_ptr<struct ftdi_context, void (*)(struct ftdi_context *)>
     UniqueFtdiContext;
 
@@ -64,6 +66,17 @@ TEST(FtdiTest, StressOpenClose) {
   }
 }
 
+// Clear all buffers, reset MPSSE, then set clock to 1kHz
+void ftdi_init_clk1k(struct ftdi_context *ctx) {
+  CHECK_EQ(ftdi_tcoflush(ctx), 0);
+  CHECK_EQ(ftdi_set_bitmode(ctx, 0, BITMODE_RESET), 0);
+  CHECK_EQ(ftdi_set_bitmode(ctx, 0, BITMODE_MPSSE), 0);
+  CHECK_EQ(ftdi_tciflush(ctx), 0);
+  // Set to 1000 Hz
+  CHECK_EQ(ftdi_write(ctx, {0x8d, 0x97, 0x8a, 0x86, 0x2f, 0x75}), 6);
+  CHECK_EQ(ftdi_read(ctx).size(), 0);
+}
+
 // Test MpsseInvalidCmdResponse
 TEST(FtdiTest, MpsseInvalidCmdResponse) {
   auto buf = std::make_unique<uint8_t[]>(2048);
@@ -94,8 +107,8 @@ TEST(FtdiTest, MpsseInvalidCmdResponseButDiscardedWithTciflush) {
 // Repeatedly writes 512B. Delay suddenly increases after 4K.
 // FT2232 has internal buffer of 4K.
 // Writes will be blocked if full.
-TEST(FtdiTest, TxBufferBehavior) {
-  GTEST_SKIP(); // default skip
+// default disabled because it desync MPSSE
+TEST(FtdiTest, DISABLED_TxWriteTimeJumpAt4K) {
   auto buf = std::make_unique<uint8_t[]>(512);
   auto dev = OpenDevice(NOT_MPSSE);
 
@@ -104,6 +117,21 @@ TEST(FtdiTest, TxBufferBehavior) {
         time([&]() { CHECK_EQ(ftdi_write_data(dev.get(), buf.get(), 512), 512); });
     std::printf("Write %4d - %4d took %10luns\n", i * 512, i * 512 + 511, t);
   }
+}
+
+// Not really some useful checks. Just see what's the value.
+// I think this is the usb transfer size.
+TEST(FtdiTest, ChunkSizeRead) {
+  uint32_t chunksize = 0;
+  auto dev = OpenDevice(NOT_MPSSE);
+  ASSERT_EQ(ftdi_read_data_get_chunksize(dev.get(), &chunksize), 0);
+  EXPECT_EQ(chunksize, 4096);
+}
+TEST(FtdiTest, ChunkSizeWrite) {
+  uint32_t chunksize = 0;
+  auto dev = OpenDevice(NOT_MPSSE);
+  ASSERT_EQ(ftdi_write_data_get_chunksize(dev.get(), &chunksize), 0);
+  EXPECT_EQ(chunksize, 4096);
 }
 
 // You can split a multi-byte command into many writes.
@@ -154,7 +182,7 @@ TEST(FtdiTest, SplitCommandModemStatus) {
   status = 0;
   ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &status), 0);
   EXPECT_EQ(status, expected_status);
-  //std::printf("Blocked status %#06x\n", status);
+  // std::printf("Blocked status %#06x\n", status);
 
   // Write second byte
   ASSERT_EQ(ftdi_write(dev.get(), {0x00}), 1);
@@ -255,3 +283,145 @@ TEST(FtdiTest, SplitCommandNotAffectedByTxPurge) {
   // Now we get data back.
   ASSERT_EQ(ftdi_read_data(dev.get(), buf.get(), 512), 171);
 }
+
+// Test read duration at a given frequency
+// Result approx: 1.5199s
+TEST(FtdiTest, ReadTiming) {
+  auto dev = OpenDevice(NOT_MPSSE);
+  ftdi_init_clk1k(dev.get());
+
+  // Read 187 bytes, should take ~1.5s, try 10 times
+  for (int i = 0; i < 10; i++) {
+    ASSERT_EQ(ftdi_write(dev.get(), {0x20, 0xba, 0x00}), 3);
+    std::vector<uint8_t> r;
+    double t = time([&]() { r = ftdi_read(dev.get()); });
+    ASSERT_EQ(r.size(), 187);
+    LOG(INFO) << "187 bytes took sec=" << t / 1e9;
+  }
+}
+
+// Check if "Send Immediate 0x87" has any effect on reading.
+// Result: approx: 1.5119s.
+//         Yes noticable difference.
+// But is it mpsse flush to rxbuffer or rxbuffer flush to usb?
+TEST(FtdiTest, ReadTimingWithSendImmediate) {
+  auto dev = OpenDevice(NOT_MPSSE);
+  ftdi_init_clk1k(dev.get());
+
+  // Read 187 bytes, should take ~1.5s, try 10 times
+  for (int i = 0; i < 10; i++) {
+    ASSERT_EQ(ftdi_write(dev.get(), {0x20, 0xba, 0x00, 0x87}), 4);
+    std::vector<uint8_t> r;
+    double t = time([&]() { r = ftdi_read(dev.get()); });
+    ASSERT_EQ(r.size(), 187);
+    LOG(INFO) << "187 bytes took sec=" << t / 1e9;
+  }
+}
+
+// Only read 4bytes a time
+// Result: except the first read took 47.9 ms, all other took ~32ms
+//         expected time is 32ms.
+//         unsure if the first read is due to cold code path.
+//         Adding a warmup call doesn't seem to fix it.
+TEST(FtdiTest, ReadTimingWith4BReads) {
+  auto buf = std::make_unique<uint8_t[]>(4);
+  auto dev = OpenDevice(NOT_MPSSE);
+  ftdi_init_clk1k(dev.get());
+
+  // ASSERT_EQ(ftdi_read_data(dev.get(), buf.get(), 4), 0);
+  // Attempt to warmup, but no effect?
+
+  // Read 128 bytes as 32x 4byte-reads
+  ASSERT_EQ(ftdi_write(dev.get(), {0x20, 0x7f, 0x00}), 3);
+  for (int i = 0; i < 32; i++) {
+    int r = 0;
+    double t = time([&]() { r = ftdi_read_data(dev.get(), buf.get(), 4); });
+    ASSERT_EQ(r, 4);
+    LOG(INFO) << "4 bytes took milisec=" << t / 1e6;
+  }
+}
+
+// 4k reads, with send immediate
+// Result: 1st 4k 47.9ms, middle 31.9ms, last 16ms.
+//         it looks like MPSSE actully buffers some bytes internally and
+//         send immediate flushes them to the rxbuf
+TEST(FtdiTest, ReadTimingWith4BReadsWithSendImmediate) {
+  auto buf = std::make_unique<uint8_t[]>(4);
+  auto dev = OpenDevice(NOT_MPSSE);
+  ftdi_init_clk1k(dev.get());
+
+  // Read 128 bytes as 32x 4byte-reads
+  ASSERT_EQ(ftdi_write(dev.get(), {0x20, 0x7f, 0x00, 0x87}), 4);
+  for (int i = 0; i < 32; i++) {
+    int r = 0;
+    double t = time([&]() { r = ftdi_read_data(dev.get(), buf.get(), 4); });
+    ASSERT_EQ(r, 4);
+    LOG(INFO) << "4 bytes took milisec=" << t / 1e6;
+  }
+}
+
+void TimeBlockedRead(int total, int block, int latency, bool imm) {
+  auto buf = std::make_unique<uint8_t[]>(block);
+  auto dev = OpenDevice(NOT_MPSSE);
+  ftdi_init_clk1k(dev.get());
+  ASSERT_EQ(ftdi_set_latency_timer(dev.get(), latency), 0);
+  LOG(INFO) << "Latency set to " << latency << "ms";
+
+  if (imm) {
+    ASSERT_EQ(
+        ftdi_write(dev.get(), {0x20, static_cast<uint8_t>((total - 1) & 0xff),
+                               static_cast<uint8_t>(((total - 1) >> 8) & 0xff), 0x87}),
+        4);
+  } else {
+    ASSERT_EQ(ftdi_write(dev.get(), {0x20, static_cast<uint8_t>((total - 1) & 0xff),
+                                     static_cast<uint8_t>(((total - 1) >> 8) & 0xff)}),
+              3);
+  }
+
+  int r_total = 0;
+  int skipped_read = 0;
+  auto t_begin = std::chrono::high_resolution_clock::now();
+  while (r_total < total) {
+    int r = ftdi_read_data(dev.get(), buf.get(), block);
+    auto t_end = std::chrono::high_resolution_clock::now();
+    if (r == 0) {
+      skipped_read++;
+      continue;
+    }
+    ASSERT_GT(r, 0);
+    double elap =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_begin).count();
+    LOG(INFO) << "Read " << r << "bytes skipped " << skipped_read
+              << " took ms=" << elap / 1e6;
+    r_total += r;
+    t_begin = t_end;
+    skipped_read = 0;
+  }
+}
+
+// Test various combination of block size and latency timer.
+// Result: Changing latency timer do have effect on MPSSE
+
+// Read call returns every byte (even 4 requested)
+// Also many 0 bytes reads in between
+TEST(FtdiTest, TimeBlockedRead4B2MSImm) { TimeBlockedRead(128, 4, 2, true); }
+// Read call returns every byte (even 4 requested)
+// Reduced 0 bytes reads in between
+TEST(FtdiTest, TimeBlockedRead4B4MSImm) { TimeBlockedRead(128, 4, 4, true); }
+// First, mid, last = 39.8, 32, 24.2
+// Have one 0B read at the beginning, but all other returns 4B together.
+TEST(FtdiTest, TimeBlockedRead4B8MSImm) { TimeBlockedRead(128, 4, 8, true); }
+// First, mid, last = 48, 32, 16
+TEST(FtdiTest, TimeBlockedRead4B16MSImm) { TimeBlockedRead(128, 4, 16, true); }
+// First, mid, last = 64, 32, 0
+TEST(FtdiTest, TimeBlockedRead4B32MSImm) { TimeBlockedRead(128, 4, 32, true); }
+// Timing become choppy: 48,48,48,0,48,48,0,48,48,...
+// I think this is libftdi1 doing buffer internally.
+// every 48ms gives 6bytes, so two 48ms wait gives 12B and the 3rd 4B read can return
+// immediately.
+TEST(FtdiTest, TimeBlockedRead4B48MSImm) { TimeBlockedRead(128, 4, 48, true); }
+// Very choppy, 64,0,64,0,...
+// Last 4B read is immediate due to the IMM command.
+TEST(FtdiTest, TimeBlockedRead4B64MSImm) { TimeBlockedRead(128, 4, 64, true); }
+// Same as above, but last 4B read need to wait 64ms before return.
+TEST(FtdiTest, TimeBlockedRead4B64MS) { TimeBlockedRead(128, 4, 64, false); }
