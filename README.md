@@ -8,6 +8,8 @@ Implemented protocols:
   - Example: MCP9808 temperature sensor.
 - WS2812B LED
   - Tested on a light strip with 144 LEDs.
+- SPI
+  - Example: MAX31856 Thermocouple amplifier.
 
 Note about USB device address:
 - Every USB device is on some bus, and is assigned a unique device number on that bus.
