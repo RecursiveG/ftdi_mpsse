@@ -729,14 +729,42 @@ TEST(FtdiTest, TxTimingResetBitBangModeAfter300ms) {
     // Set CLK pin as output
     ASSERT_EQ(ftdi_write(dev.get(), {0x80, 0x01, 0x01}), 3);
 
-    // Write 128 bytes, but only 64B data
+    // Write 128 bytes
     ASSERT_EQ(ftdi_write_with_repeat(dev.get(), {0x10, 0x7f, 0x00}, 0xab, 128), 131);
 
+    // Reset MPSSE after 300ms
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     ftdi_set_bitmode(dev.get(), 0, BITMODE_RESET);
-    // Re enable MPSSE mode doesn't work, MPSSE is reset.
+
+    // Reenable MPSSE mode doesn't work, MPSSE is reset.
     // ftdi_set_bitmode(dev.get(), 0, BITMODE_MPSSE);
     // std::this_thread::sleep_for(std::chrono::milliseconds(100));
   });
   LOG(INFO) << "Device open to close took ms=" << t / 1e6;
+}
+
+// - Only 0x0032 and 0x6032 observed
+// - When see 0x6032, pull gpio4 up
+// - Logic analyzer shows: that happens after the clocking stops.
+// - So it's likely an OK signal for transmission completion.
+TEST(FtdiTest, TxTimingModemStatus) {
+
+  auto dev = OpenDevice(NOT_MPSSE);
+  ftdi_init_clk1k(dev.get());
+  // Set CLK pin and PIN4 as output
+  ASSERT_EQ(ftdi_write(dev.get(), {0x80, 0x01, 0x11}), 3);
+
+  // Write 128 bytes, should took about 1s
+  ASSERT_EQ(ftdi_write_with_repeat(dev.get(), {0x10, 0x7f, 0x00}, 0xab, 128), 131);
+  auto start = std::chrono::high_resolution_clock::now();
+  uint16_t st;
+
+  while (std::chrono::high_resolution_clock::now() - start <
+         std::chrono::milliseconds(2000)) {
+    ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &st), 0);
+    // Pull pin4 up when see 0x6032
+    if (st == 0x6032) {
+      ASSERT_EQ(ftdi_write(dev.get(), {0x80, 0x11, 0x11}), 3);
+    }
+  }
 }
