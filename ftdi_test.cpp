@@ -48,6 +48,14 @@ int ftdi_write(struct ftdi_context *ctx, std::vector<uint8_t> data) {
   return ftdi_write_data(ctx, data.data(), data.size());
 }
 
+int ftdi_write_with_repeat(struct ftdi_context *ctx, std::vector<uint8_t> data,
+                           uint8_t val, int count) {
+  for (int i = 0; i < count; i++) {
+    data.push_back(val);
+  }
+  return ftdi_write_data(ctx, data.data(), data.size());
+}
+
 std::vector<uint8_t> ftdi_read(struct ftdi_context *ctx) {
   auto buf = std::make_unique<uint8_t[]>(8192);
   int r = ftdi_read_data(ctx, buf.get(), 8192);
@@ -575,7 +583,7 @@ TEST(FtdiTest, RxBufferFullThenClearTx) {
 TEST(FtdiTest, ReadDataInWhileRxFull) {
   auto dev = OpenDevice(NOT_MPSSE);
   ftdi_init_clk1k(dev.get());
-  // Set Pin output
+  // Set CLK pin as output
   ASSERT_EQ(ftdi_write(dev.get(), {0x80, 0x01, 0x01}), 3);
 
   // Fill rx queue and only leave 128 bytes free
@@ -594,4 +602,141 @@ TEST(FtdiTest, ReadDataInWhileRxFull) {
   LOG(INFO) << "read time ms=" << t / 1e6; // Result: t= ~1s
 
   PrintStatus(dev.get(), "5"); // 0x6032
+}
+
+// It took 1055.9ms to get back the reply for the invalid cmd.
+// Also about 65 zero length reads before getting the result.
+// Note 65*16ms = 1040ms. Test also confirmed latency counter is related.
+// if latency counter := 8, read_attempt == 129
+TEST(FtdiTest, TxTiming) {
+  auto dev = OpenDevice(NOT_MPSSE);
+  ftdi_init_clk1k(dev.get());
+
+  // read_attempt count related to latency counter
+  // ftdi_set_latency_timer(dev.get(), 8);
+
+  // Write 128 bytes, then one invalid command to get echo back.
+  for (int i = 0; i < 10; i++) {
+    ASSERT_EQ(ftdi_write_with_repeat(dev.get(), {0x10, 0x7f, 0x00}, 0xab, 128 + 1), 132);
+    std::vector<uint8_t> r;
+    int read_attempt = 0;
+    double t = time([&]() {
+      while (r.empty()) {
+        r = ftdi_read(dev.get());
+        read_attempt++;
+      }
+    });
+    ASSERT_EQ(r.size(), 2);
+    LOG(INFO) << "Write 128 bytes, read attempt " << read_attempt
+              << " took milisec=" << t / 1e6;
+    // Example output: Write 128 bytes, read attempt 65 took milisec=1055.95
+  }
+}
+
+// Write data, but don't give all data at once.
+// Result: Similar to RX, if data is not available yet, MPSSE will stop clocking
+//         and resume when data comes.
+TEST(FtdiTest, TxTimingWithInsufficientData) {
+  auto dev = OpenDevice(NOT_MPSSE);
+  ftdi_init_clk1k(dev.get());
+  // Set CLK pin as output
+  ASSERT_EQ(ftdi_write(dev.get(), {0x80, 0x01, 0x01}), 3);
+
+  // Write 128 bytes, but only 64B data
+  ASSERT_EQ(ftdi_write_with_repeat(dev.get(), {0x10, 0x7f, 0x00}, 0xab, 64), 67);
+  // Sleep 2s. MPSSE should have been idle for 1.5s
+  LOG(INFO) << "Waiting...";
+  std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+  // Write the remaining 64B data.
+  ASSERT_EQ(ftdi_write_with_repeat(dev.get(), {}, 0xab, 64), 64);
+  LOG(INFO) << "New data provided";
+  std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+}
+
+// Same as above, but with a 30s long pause in the middle
+// Result: Yes. MPSSE can resume after 30s.
+TEST(FtdiTest, TxTimingWithInsufficientDataLongPause) {
+  auto dev = OpenDevice(NOT_MPSSE);
+  ftdi_init_clk1k(dev.get());
+  // Set CLK pin as output
+  ASSERT_EQ(ftdi_write(dev.get(), {0x80, 0x01, 0x01}), 3);
+
+  // Write 128 bytes, but only 64B data
+  ASSERT_EQ(ftdi_write_with_repeat(dev.get(), {0x10, 0x7f, 0x00}, 0xab, 64), 67);
+  // Delay 30s
+  const int kDelay = 30;
+  for (int i = 0; i < kDelay; i++) {
+    LOG(INFO) << "Waiting... " << (kDelay - i);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  }
+  // Write the remaining 64B data.
+  ASSERT_EQ(ftdi_write_with_repeat(dev.get(), {}, 0xab, 64), 64);
+  LOG(INFO) << "New data provided";
+  std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+}
+
+// Result: yes MPSSE is alive across device reopen.
+//         And it seems device bitbang mode stay at MPSSE mode.
+TEST(FtdiTest, TxTimingWithInsufficientDataAndReopen) {
+  {
+    auto dev = OpenDevice(NOT_MPSSE);
+    ftdi_init_clk1k(dev.get());
+    // Set CLK pin as output
+    ASSERT_EQ(ftdi_write(dev.get(), {0x80, 0x01, 0x01}), 3);
+
+    // Write 128 bytes, but only 64B data
+    ASSERT_EQ(ftdi_write_with_repeat(dev.get(), {0x10, 0x7f, 0x00}, 0xab, 32), 35);
+  }
+  // Sleep 2s. MPSSE should have been idle for 1.5s
+  LOG(INFO) << "Waiting...";
+  std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+
+  {
+    // Reopen device
+    auto dev = OpenDevice(NOT_MPSSE);
+
+    // Write the remaining 64B data.
+    ASSERT_EQ(ftdi_write_with_repeat(dev.get(), {}, 0xab, 96), 96);
+    LOG(INFO) << "New data provided";
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+  }
+}
+
+// Result: MPSSE can finish the 1s transmission even the device is closed.
+//         Not surprising to me given the last test result.
+TEST(FtdiTest, TxTimingCloseDeviceImmediately) {
+  double t = time([] {
+    auto dev = OpenDevice(NOT_MPSSE);
+    ftdi_init_clk1k(dev.get());
+    // Set CLK pin as output
+    ASSERT_EQ(ftdi_write(dev.get(), {0x80, 0x01, 0x01}), 3);
+
+    // Write 128 bytes, but only 64B data
+    ASSERT_EQ(ftdi_write_with_repeat(dev.get(), {0x10, 0x7f, 0x00}, 0xab, 128), 131);
+  });
+  LOG(INFO) << "Device open to close took ms=" << t / 1e6;
+}
+
+// Result: Not really surprising given BITMODE_RESET can reset MPSSE
+// - It first clock at correct frequency for 300ms
+// - Then the freq goes wild (I think whatever default feature
+//   take over MPSSE and is interpreting the TX buf data.)
+// - Then fully stop transmitting after another ~100ms.
+TEST(FtdiTest, TxTimingResetBitBangModeAfter300ms) {
+  double t = time([] {
+    auto dev = OpenDevice(NOT_MPSSE);
+    ftdi_init_clk1k(dev.get());
+    // Set CLK pin as output
+    ASSERT_EQ(ftdi_write(dev.get(), {0x80, 0x01, 0x01}), 3);
+
+    // Write 128 bytes, but only 64B data
+    ASSERT_EQ(ftdi_write_with_repeat(dev.get(), {0x10, 0x7f, 0x00}, 0xab, 128), 131);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    ftdi_set_bitmode(dev.get(), 0, BITMODE_RESET);
+    // Re enable MPSSE mode doesn't work, MPSSE is reset.
+    // ftdi_set_bitmode(dev.get(), 0, BITMODE_MPSSE);
+    // std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  });
+  LOG(INFO) << "Device open to close took ms=" << t / 1e6;
 }
