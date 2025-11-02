@@ -60,6 +60,21 @@ std::vector<uint8_t> ftdi_read(struct ftdi_context *ctx) {
   return ret;
 }
 
+std::vector<uint8_t> repeated(uint8_t val, int count) {
+  std::vector<uint8_t> ret;
+  for (int i = 0; i < count; i++) {
+    ret.push_back(val);
+  }
+  return ret;
+}
+
+uint16_t PrintStatus(struct ftdi_context *ctx, std::string log_id) {
+  uint16_t st = 0;
+  CHECK_EQ(ftdi_poll_modem_status(ctx, &st), 0);
+  std::printf("Status %s = %#06x\n", log_id.c_str(), st);
+  return st;
+}
+
 TEST(FtdiTest, StressOpenClose) {
   for (int i = 0; i < 100; i++) {
     auto ctx = OpenDevice(NOT_MPSSE);
@@ -425,3 +440,158 @@ TEST(FtdiTest, TimeBlockedRead4B48MSImm) { TimeBlockedRead(128, 4, 48, true); }
 TEST(FtdiTest, TimeBlockedRead4B64MSImm) { TimeBlockedRead(128, 4, 64, true); }
 // Same as above, but last 4B read need to wait 64ms before return.
 TEST(FtdiTest, TimeBlockedRead4B64MS) { TimeBlockedRead(128, 4, 64, false); }
+
+// Push 3000 invalid cmds, we should get 6000 bytes back.
+TEST(FtdiTest, RxBufferFull) {
+  auto dev = OpenDevice(SET_MPSSE);
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 3000)), 3000);
+  // make sure the MPSSE is blocked on a full rxbuf for a while.
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  // Still get all replies. (I think it's actually two 4k reads by libftdi)
+  ASSERT_THAT(ftdi_read(dev.get()), SizeIs(6000));
+}
+
+// fill 2048+2048+2048: success
+// This should totally fill rx and tx
+TEST(FtdiTest, TxAndRxFull1) {
+  auto dev = OpenDevice(SET_MPSSE);
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 2048)), 2048);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 2048)), 2048);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 2048)), 2048);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
+// fill 2048+2048+2049: fail on last
+// Seems the MPSSE will not remove data from tx buf if rx buf is full?
+TEST(FtdiTest, TxAndRxFull2) {
+  auto dev = OpenDevice(SET_MPSSE);
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 2048)), 2048);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 2048)), 2048);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 2049)), -1); // fail
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
+// fill 2048+4088+8: fail on last
+// Seems hw will reject writes when rxbuf is too full, dispite not totally full
+TEST(FtdiTest, TxAndRxFull3) {
+  auto dev = OpenDevice(SET_MPSSE);
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 2048)), 2048);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 4088)), 4088);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 8)), -1); // fail
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
+// TxAndRxFull1 with modem status print
+// Status is either 0x6032 or 0x0032, seems related to TXQ emptiness, but I don't know
+// why.
+TEST(FtdiTest, TxAndRxFullModemStatus) {
+  auto dev = OpenDevice(SET_MPSSE);
+  uint16_t status;
+
+  ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &status), 0);
+  std::printf("Status 1 = %#06x\n", status);
+  EXPECT_EQ(status, 0x6032);
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 2048)), 2048);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &status), 0);
+  std::printf("Status 2 = %#06x\n", status);
+  EXPECT_EQ(status, 0x6032);
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 2048)), 2048);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &status), 0);
+  std::printf("Status 3 = %#06x\n", status);
+  EXPECT_EQ(status, 0x0032);
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 2048)), 2048);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &status), 0);
+  std::printf("Status 4 = %#06x\n", status);
+  EXPECT_EQ(status, 0x0032);
+
+  auto buf = std::make_unique<uint8_t[]>(4096);
+
+  ASSERT_EQ(ftdi_read_data(dev.get(), buf.get(), 4096), 4096);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &status), 0);
+  std::printf("Status 5 = %#06x\n", status);
+  EXPECT_EQ(status, 0x0032);
+
+  ASSERT_EQ(ftdi_read_data(dev.get(), buf.get(), 4096), 4096);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &status), 0);
+  std::printf("Status 6 = %#06x\n", status);
+  EXPECT_EQ(status, 0x6032);
+
+  ASSERT_EQ(ftdi_read_data(dev.get(), buf.get(), 4096), 4096);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_EQ(ftdi_poll_modem_status(dev.get(), &status), 0);
+  std::printf("Status 7 = %#06x\n", status);
+  EXPECT_EQ(status, 0x6032);
+}
+
+// Clear TX cmds when MPSSE is blocked on RX full.
+// 1. The size is 4098, indicate 4096 rxbuf + one command latched in MPSSE
+// 2. Per "TxAndRxFull2", we know the latched command isn't removed from tx
+// 3. We cleared tx
+// 4. Why the latched command still executed using the old txq cmd, not 0xfa00?
+// Guess such operation is inheritly racey.
+TEST(FtdiTest, RxBufferFullThenClearTx) {
+  auto dev = OpenDevice(SET_MPSSE);
+
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 3000)), 3000);
+  // make sure the MPSSE is blocked on a full rxbuf.
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  // Clear tx
+  ASSERT_EQ(ftdi_tcoflush(dev.get()), 0);
+  // Read back
+  auto ret = ftdi_read(dev.get());
+  ASSERT_THAT(ret, SizeIs(4098));
+  ASSERT_EQ(ret.at(4096), 0xfa);
+  ASSERT_EQ(ret.at(4097), 0xaa);
+}
+
+// Test what happens if RX full in the middle of a read command?
+// Result: HW will stop clocking, and when RX buf cleared, continue clocking.
+//         Logic analyzer show CLK for 1s, then paused for ~0.5sec,
+//         then clock for another 1s
+TEST(FtdiTest, ReadDataInWhileRxFull) {
+  auto dev = OpenDevice(NOT_MPSSE);
+  ftdi_init_clk1k(dev.get());
+  // Set Pin output
+  ASSERT_EQ(ftdi_write(dev.get(), {0x80, 0x01, 0x01}), 3);
+
+  // Fill rx queue and only leave 128 bytes free
+  PrintStatus(dev.get(), "1"); // 0x6032
+  ASSERT_EQ(ftdi_write(dev.get(), repeated(0xaa, 1984)), 1984);
+  // Try to read 256 bytes
+  PrintStatus(dev.get(), "2"); // 0x0032
+  ASSERT_EQ(ftdi_write(dev.get(), {0x20, 0xff, 0x00}), 3);
+  // after 1s: read 128B and rx full
+  // will the second 128 be discarded?
+  PrintStatus(dev.get(), "3"); // 0x0032
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  // Read RX: why all 4224 bytes returned together?
+  PrintStatus(dev.get(), "4"); // 0x6032
+  double t = time([&]() { CHECK_EQ(ftdi_read(dev.get()).size(), 4096 + 128); });
+  LOG(INFO) << "read time ms=" << t / 1e6; // Result: t= ~1s
+
+  PrintStatus(dev.get(), "5"); // 0x6032
+}
