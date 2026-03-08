@@ -81,7 +81,7 @@ Status FtdiDevice::BufferBytes(std::span<const uint8_t> data) {
   if (buffer_used_ + data.size() > kBufferSize) {
     return Status::Err("Too many bytes to write");
   }
-  for (ssize_t i = 0; i < data.size(); i++) {
+  for (size_t i = 0; i < data.size(); i++) {
     buffer_[buffer_used_++] = data[i];
   }
   return Status::Ok();
@@ -102,7 +102,7 @@ Status FtdiDevice::BufferFlush() {
     return Status::Ok();
   }
   int ret = ftdi_write_data(context_.get(), buffer_, buffer_used_);
-  if (ret != buffer_used_) {
+  if (ret < 0 || static_cast<uint32_t>(ret) != buffer_used_) {
     return Status::Err(std::format("ftdi_write_data() failed: expected {} got {}", buffer_used_, ret));
   }
   buffer_used_ = 0;
@@ -156,7 +156,7 @@ Status FtdiDevice::WaitTransmitterEmpty(uint32_t timeout_ms) {
     }
   }
 
-  for (int i = 0; i < timeout_ms; i++) {
+  for (uint32_t i = 0; i < timeout_ms; i++) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
     err = ftdi_poll_modem_status(context_.get(), &status);
     if (err) return Status::Err(std::format("ftdi_pool_modem_status() failed: {}", err));

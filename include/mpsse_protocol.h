@@ -68,7 +68,7 @@ public:
   // The context will be freed on destruction.
   FtdiDevice() : FtdiDevice(nullptr) {}
   explicit FtdiDevice(struct ftdi_context *context) : context_(context, &FreeContext) {}
-  virtual ~FtdiDevice();
+  virtual ~FtdiDevice() = default;
   struct ftdi_context *context() { return context_.get(); }
 
   //

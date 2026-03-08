@@ -18,6 +18,7 @@
 
 using mpsse_protocol::FtdiDevice;
 using mpsse_protocol::MpsseI2c;
+using mpsse_protocol::Status;
 
 #define MCP9808_ADDR7 0x18
 #define MCP9808_REG_CONFIG 0x1
@@ -39,22 +40,22 @@ int main(int argc, char *argv[]) {
     {
       uint8_t tx_data = MCP9808_REG_MANUFACTURER_ID;
       uint16_t rx_data;
-      int success = i2c->Transaction(MCP9808_ADDR7, &tx_data, 1, &rx_data, 2);
-      DIE_IF(success != 0, "Failed to get Manufacturer ID.");
+      Status st = i2c->Transaction(MCP9808_ADDR7, &tx_data, 1, &rx_data, 2);
+      DIE_IF(!st.ok(), "Failed to get Manufacturer ID.");
       std::printf("Manufacturer ID: %#06x\n", ntohs(rx_data));
     }
     {
       uint8_t tx_data = MCP9808_REG_DEVID_REV;
       uint8_t rx_data[2];
-      int success = i2c->Transaction(MCP9808_ADDR7, &tx_data, 1, &rx_data, 2);
-      DIE_IF(success != 0, "Failed to get DevID / Rev.");
+      Status st = i2c->Transaction(MCP9808_ADDR7, &tx_data, 1, &rx_data, 2);
+      DIE_IF(!st.ok(), "Failed to get DevID / Rev.");
       std::printf("Device ID: %#04x\nRevision: %#04x\n", rx_data[0], rx_data[1]);
     }
     {
       uint8_t tx_data = MCP9808_REG_RESOLUTION;
       uint8_t rx_data;
-      int success = i2c->Transaction(MCP9808_ADDR7, &tx_data, 1, &rx_data, 1);
-      DIE_IF(success != 0, "Failed to get Resolution.");
+      Status st = i2c->Transaction(MCP9808_ADDR7, &tx_data, 1, &rx_data, 1);
+      DIE_IF(!st.ok(), "Failed to get Resolution.");
       switch (rx_data) {
       case 0:  std::printf("Resolution: 0.5    °C\n"); break;
       case 1:  std::printf("Resolution: 0.25   °C\n"); break;
@@ -66,8 +67,8 @@ int main(int argc, char *argv[]) {
     {
       uint8_t tx_data = MCP9808_REG_TEMPERATURE;
       uint16_t rx_data;
-      int success = i2c->Transaction(MCP9808_ADDR7, &tx_data, 1, &rx_data, 2);
-      DIE_IF(success != 0, "Failed to get Temperature.");
+      Status st = i2c->Transaction(MCP9808_ADDR7, &tx_data, 1, &rx_data, 2);
+      DIE_IF(!st.ok(), "Failed to get Temperature.");
       double temp = (double)((int16_t)(ntohs(rx_data) << 3) >> 3) / 16.0;
       printf("Temperature: (%#06x) %f°C\n", ntohs(rx_data), temp);
     }
