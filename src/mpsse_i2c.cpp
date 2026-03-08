@@ -1,5 +1,22 @@
 #include "mpsse_protocol.h"
 
+#include <memory>
+#include <functional>
+
+#define RETURN_IF(cond, ret, fmt, ...)                                                                  \
+  do {                                                                                                  \
+    if (cond) {                                                                                         \
+      std::fprintf(stderr, fmt "\n", ##__VA_ARGS__);                                                    \
+      return (ret);                                                                                     \
+    }                                                                                                   \
+  } while (0)
+
+#define RETURN_IF_ERR(st)                                                                               \
+  do {                                                                                                  \
+    Status s = (st);                                                                                    \
+    if (!s.ok()) return s;                                                                              \
+  } while (0)
+
 namespace mpsse_protocol {
 
 std::unique_ptr<MpsseI2c> MpsseI2c::Create(FtdiDevice *dev, float scl_khz) {
@@ -8,14 +25,20 @@ std::unique_ptr<MpsseI2c> MpsseI2c::Create(FtdiDevice *dev, float scl_khz) {
   // Use the desctructor to cleanup the bitmode setting.
   auto ret = std::unique_ptr<MpsseI2c>(new MpsseI2c(dev));
 
-  err = dev->MpsseSync();
-  RETURN_IF(err != 0, nullptr, "MpsseSync() failed: %d", err);
+  Status st = dev->MpsseSync();
+  RETURN_IF(!st.ok(), nullptr, "MpsseSync() failed: %s", st.human().c_str());
 
-  err = dev->MpsseSetClockFreq(scl_khz, /*three_phase=*/true, /*adaptive=*/false);
-  RETURN_IF(err != 0, nullptr, "MpsseSetClockFreq() failed: %d", err);
+  st = dev->MpsseSetClockFreq(scl_khz, /*three_phase=*/true, /*adaptive=*/false);
+  RETURN_IF(!st.ok(), nullptr, "MpsseSetClockFreq() failed: %s", st.human().c_str());
 
-  err = ret->InitializePins();
-  RETURN_IF(err != 0, nullptr, "InitializeI2cPins() failed: %d", err);
+  // Initialize pin
+  // Postcond: SDA & SCL both hold high.
+  dev->BufferClear();
+  st = dev->MpsseSetLowerPins(
+    /*state=*/ 0b0000'0011,
+    /*dir=*/   0b0000'0011
+  );
+  RETURN_IF(!st.ok(), nullptr, "InitializeI2cPins() failed: %s", st.human().c_str());
 
   return ret;
 }
@@ -28,46 +51,39 @@ MpsseI2c::~MpsseI2c() {
   }
 }
 
-// Postcond: SDA & SCL both hold high.
-int MpsseI2c::InitializePins() {
-  dev_->BufferClear();
-  return dev_->MpsseSetLowerPins(
-    /*state=*/ 0b0000'0011,
-    /*dir=*/   0b0000'0011
-  );
-}
-
-int MpsseI2c::Start() {
+// clang-format off
+Status MpsseI2c::Start() {
   // First set SDA to LOW, indicates start
-  if (dev_->MpsseSetLowerPins(
+  RETURN_IF_ERR(dev_->MpsseSetLowerPins(
     0b00000001,
     0b00000011
-  )) return -1;
+  ));
 
   // Then bring SCL to low prepare for data tx, time gap is needed.
   // Time gap is established by two separate write calls.
-  if (dev_->MpsseSetLowerPins(
+  RETURN_IF_ERR(dev_->MpsseSetLowerPins(
     0b00000000,
     0b00000011
-  )) return -1;
+  ));
 
-  return 0;
+  return Status::Ok();
+}
+// clang-format on
+
+Status MpsseI2c::Restart() {
+  // Time gap is needed at all places.
+  RETURN_IF_ERR(dev_->MpsseSetLowerPins(0b00000010, 0b00000011));
+  RETURN_IF_ERR(dev_->MpsseSetLowerPins(0b00000011, 0b00000011));
+  RETURN_IF_ERR(dev_->MpsseSetLowerPins(0b00000001, 0b00000011));
+  RETURN_IF_ERR(dev_->MpsseSetLowerPins(0b00000000, 0b00000011));
+  return Status::Ok();
 }
 
-int MpsseI2c::Restart() {
+Status MpsseI2c::Stop() {
   // Time gap is needed at all places.
-  if (dev_->MpsseSetLowerPins(0b00000010, 0b00000011)) return -1;
-  if (dev_->MpsseSetLowerPins(0b00000011, 0b00000011)) return -1;
-  if (dev_->MpsseSetLowerPins(0b00000001, 0b00000011)) return -1;
-  if (dev_->MpsseSetLowerPins(0b00000000, 0b00000011)) return -1;
-  return 0;
-}
-
-int MpsseI2c::Stop() {
-  // Time gap is needed at all places.
-  if (dev_->MpsseSetLowerPins(0b00000001, 0b00000011)) return -1;
-  if (dev_->MpsseSetLowerPins(0b00000011, 0b00000011)) return -1;
-  return 0;
+  RETURN_IF_ERR(dev_->MpsseSetLowerPins(0b00000001, 0b00000011));
+  RETURN_IF_ERR(dev_->MpsseSetLowerPins(0b00000011, 0b00000011));
+  return Status::Ok();
 }
 
 // MPSSE data TX clock edge limitation:
@@ -94,114 +110,119 @@ int MpsseI2c::Stop() {
 #define MPSSE_IDLE_LOW_READ   (MPSSE_DO_READ)
 #define MPSSE_IDLE_HIGH_READ  (MPSSE_DO_READ | MPSSE_READ_NEG)
 
-int MpsseI2c::WriteByte(uint8_t data) {
-  uint8_t cmds[] = {
+Status MpsseI2c::WriteByte(uint8_t data, bool *ack) {
+  uint8_t cmd_write_byte[] = {
     // Transfer 8 bits.
     MPSSE_IDLE_LOW_WRITE | MPSSE_BITMODE,
     0x7,  // 0x7 == 8 bits
     data,  // the byte
-
+  };
+  RETURN_IF_ERR(dev_->BufferBytes(cmd_write_byte));
+  RETURN_IF_ERR(dev_->MpsseSetLowerPins(
     // Both SDA and SCL should be LOW now, set ADBUS1 to INPUT mode so ADBUS2 can read the ack.
     // Time gap is not needed since the write should hold the data for 1/3 cycle after the pulse.
-    SET_BITS_LOW,
     0b00000000,
     0b00000001,
-
+    /*flush=*/ false
+  ));
+  uint8_t cmd_read_bit[] = {
     // Read ACK bit
     // Time gap is not needed before nor after because the clock should extend 1/3 cycle each direction.
     MPSSE_IDLE_LOW_READ | MPSSE_BITMODE,
     0,  // 0 = 1bit
-
+  };
+  RETURN_IF_ERR(dev_->BufferBytes(cmd_read_bit));
+  RETURN_IF_ERR(dev_->BufferByte(
     // Ask device to flush data back to PC, so the ftdi_read_byte below can be fast.
-    SEND_IMMEDIATE,
-
+    SEND_IMMEDIATE
+  ));
+  RETURN_IF_ERR(dev_->MpsseSetLowerPins(
     // Immediately take back the control of the SDA line and hold it low.
     // This step can in theory be postponsed and be done before the next write, or omitted if an i2c read follows.
     // But for simplicity of the reasoning about the pre/post cond, it's left here.
-    SET_BITS_LOW,
     0b00000000,
-    0b00000011
-  };
+    0b00000011,
+    /*flush=*/ false
+  ));
 
-  int err = 0;
-  err = dev_->BufferBytes(cmds); if (err) return -1;
-  err = dev_->BufferFlush(); if (err) return -1;
+  RETURN_IF_ERR(dev_->BufferFlush());
 
   uint8_t ack_bit;
-  err = dev_->Read(&ack_bit, 1);
-  if (err) return -1;
+  RETURN_IF_ERR(dev_->Read(&ack_bit, 1));
 
-  // Low is ACK, high is NACK
-  return (ack_bit & 0x1) ? 0 : 1;
+  if (ack) {
+    // Low is ACK, high is NACK
+    *ack = (ack_bit & 0x1) == 0;
+  }
+
+  return Status::Ok();
 }
 
-int MpsseI2c::ReadBytes(uint16_t len, void* buf) {
-  int err = 0;
-  if (len == 0) return 0;
+Status MpsseI2c::ReadBytes(uint16_t len, void* buf) {
+  if (len > 320) return Status::Err("Too many data to read");
+  if (len == 0) return Status::Ok();
   // All operations can be done continuously without time gap in between.
   for (int i = 0; i < len; ++i) {
     // Release SDA line for reading.
-    uint8_t rel_sda[] = {SET_BITS_LOW, 0b00000000, 0b00000001};
-    err = dev_->BufferBytes(rel_sda); if (err) return -1;
+    RETURN_IF_ERR(dev_->MpsseSetLowerPins(0b00000000, 0b00000001, false));
 
     // READ 1 byte, 0x7=8bits
-    uint8_t read_cmd[] = {MPSSE_IDLE_LOW_READ | MPSSE_BITMODE , 0x7};
-    err = dev_->BufferBytes(read_cmd); if (err) return -1;
+    RETURN_IF_ERR(dev_->BufferBytes({MPSSE_IDLE_LOW_READ | MPSSE_BITMODE , 0x7}));
 
     // Re-acquire SDA
-    uint8_t acq_sda[] = {SET_BITS_LOW, 0b00000000, 0b00000011};
-    err = dev_->BufferBytes(acq_sda); if (err) return -1;
+    RETURN_IF_ERR(dev_->MpsseSetLowerPins(0b00000000, 0b00000011, false));
 
     // Clock out the ACK or NACK.
     // Note for I2C, high(1) is NACK.
     // Also use MPSSE_LSB so the bit is taken from LSB, otherwise need to use 0x80.
-    uint8_t send_ack[] = {
-      MPSSE_IDLE_LOW_WRITE | MPSSE_BITMODE | MPSSE_LSB, 0, static_cast<uint8_t>((i == len-1) ? 1 : 0)};
-    err = dev_->BufferBytes(send_ack); if (err) return -1;
+    RETURN_IF_ERR(dev_->BufferBytes({
+      MPSSE_IDLE_LOW_WRITE | MPSSE_BITMODE | MPSSE_LSB,
+      0, // 0=1bit
+      static_cast<uint8_t>((i == len-1) ? 1 : 0)}));
   }
   // Flush all data to PC.
-  err = dev_->BufferByte(SEND_IMMEDIATE); if (err) return -1;
+  RETURN_IF_ERR(dev_->BufferByte(SEND_IMMEDIATE));
   // Execute
-  err = dev_->BufferFlush(); if (err) return -1;
-  err = dev_->Read(buf, len); if (err) return -1;
-  return 0;
+  RETURN_IF_ERR(dev_->BufferFlush());
+  return dev_->Read(buf, len);
 }
 
-int MpsseI2c::Transaction(uint8_t addr7,
+Status MpsseI2c::Transaction(uint8_t addr7,
                           const uint8_t* tx_data, int tx_len,
                           void* rx_buf, int rx_len) {
-  RETURN_IF(tx_len < 0 || rx_len < 0, -1, "invalid argument");
+  if (tx_len < 0 || rx_len < 0) return Status::Err("Invalid arguments");
 
-  Start();
+  RETURN_IF_ERR(Start());
   std::unique_ptr<MpsseI2c, std::function<void(MpsseI2c*)>> stop_on_exit(this, [](MpsseI2c *obj){
     // Make sure we issue the stop sequence when we return.
-    obj->Stop();
+    auto st = obj->Stop();
+    if (!st.ok()) {
+      std::fprintf(stderr, "Failed to issue an stop for I2C transaction: %s\n", st.human().c_str());
+    }
   });
 
   if (tx_len > 0) {
-    int ack = 0;
-    ack = WriteByte(Addr7ToData(addr7, /*read=*/false));
-    if (ack < 0) return -1;
-    if (ack == 0) return -2;
+    // int ack = 0;
+    bool ack = false;
+
+    RETURN_IF_ERR(WriteByte(Addr7ToData(addr7, /*read=*/false), &ack));
+    if (!ack) return Status::Err("No ack from device");
     for (int i = 0; i < tx_len; ++i) {
-      ack = WriteByte(tx_data[i]);
-      if (ack < 0) return -1;
-      if (ack == 0) return -2;
+      RETURN_IF_ERR(WriteByte(tx_data[i], &ack));
+      if (!ack) return Status::Err("NACK before all data sent");
     }
 
-    if (rx_len == 0) return 0;  // No read. Issue Stop and return.
-    Restart();  // Issue a restart to prepare the the Read.
+    if (rx_len == 0) return Status::Ok();  // No read. Issue Stop and return.
+    RETURN_IF_ERR(Restart());  // Issue a restart to prepare the the Read.
   }
 
-  int ack = 0;
-  ack = WriteByte(Addr7ToData(addr7, /*read=*/true));
-  if (ack < 0) return -1;
-  if (ack == 0) return -2;
+  bool ack = false;
+  RETURN_IF_ERR(WriteByte(Addr7ToData(addr7, /*read=*/true), &ack));
+  if (!ack) return Status::Err("No ack from device for read");
 
-  if (rx_len == 0) return 0;
+  if (rx_len == 0) return Status::Ok();
 
-  int err = ReadBytes(rx_len, rx_buf);
-  return err ? -1 : 0;
+  return ReadBytes(rx_len, rx_buf);
 }
 
 }

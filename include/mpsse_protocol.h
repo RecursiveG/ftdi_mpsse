@@ -1,78 +1,143 @@
+#ifndef __MPSSE_PROTOCOL_H__
+#define __MPSSE_PROTOCOL_H__
+
+#include <chrono>
 #include <cstdint>
-#include <memory>
-#include <optional>
-#include <span>
+#include <cstring>
+#include <format>
 #include <ftdi.h>
+#include <memory>
+#include <span>
+#include <string>
 
 namespace mpsse_protocol {
 
+class Status {
+public:
+  static Status Ok() { return {}; }
+  static Status Err(std::string msg) { return {-1, msg}; }
+  static Status Errno(int errno, std::string msg) { return {errno, msg}; }
+
+  // If the status is OK.
+  bool ok() const { return err_ == 0; }
+
+  // Return the error code:
+  //               0 : OK
+  // positive number : Linux errno
+  //              -1 : Other errors
+  int err() const { return err_; }
+
+  // Return the attached message.
+  const std::string &msg() const { return msg_; }
+
+  // Return a human readable message.
+  std::string human() const {
+    if (err_ == 0) return "OK";
+    if (err_ == -1) return "Error: " + msg_;
+    return std::format("Errno {} {}. {}", err_, strerror(err_), msg_);
+  }
+
+  // Quick and dirty way to chain multiple Status together
+  Status &operator|=(const Status &rhs) {
+    if (err_ == 0) {
+      err_ = rhs.err_;
+      msg_ = rhs.msg_;
+    } else if (!rhs.ok()) {
+      msg_ += " -> chained error " + rhs.human();
+    }
+    return *this;
+  }
+
+private:
+  Status(int err = 0, std::string msg = "") : err_(err), msg_(msg) {}
+  int err_ = 0;
+  std::string msg_ = "";
+};
+
 class FtdiDevice {
 public:
-  static std::unique_ptr<FtdiDevice>
-  OpenVendorProduct(uint16_t id_vendor, uint16_t id_product,
-                    enum ftdi_interface intf = INTERFACE_ANY);
+  static std::unique_ptr<FtdiDevice> OpenVendorProduct(uint16_t id_vendor, uint16_t id_product,
+                                                       enum ftdi_interface intf = INTERFACE_ANY);
   // This is the device number. Not to be confused by the port number which may also shown
   // as "x-y"
-  static std::unique_ptr<FtdiDevice>
-  OpenBusDevice(int bus, int device, enum ftdi_interface intf = INTERFACE_ANY);
-
-  // No copy nor move.
-  FtdiDevice(const FtdiDevice &) = delete;
-  FtdiDevice &operator=(const FtdiDevice &) = delete;
-  FtdiDevice &operator=(FtdiDevice &&another) noexcept = delete;
-  FtdiDevice(FtdiDevice &&another) noexcept = delete;
+  static std::unique_ptr<FtdiDevice> OpenBusDevice(int bus, int device,
+                                                   enum ftdi_interface intf = INTERFACE_ANY);
+  static void FreeContext(struct ftdi_context *context);
 
   // The context will be freed on destruction.
-  explicit FtdiDevice(struct ftdi_context *context) : context_(context) {}
+  FtdiDevice() : FtdiDevice(nullptr) {}
+  explicit FtdiDevice(struct ftdi_context *context) : context_(context, &FreeContext) {}
   virtual ~FtdiDevice();
-  struct ftdi_context *context() { return context_; }
+  struct ftdi_context *context() { return context_.get(); }
 
   //
   // Helper functions used by different interface classes.
-  // All these functions return 0 on success unless otherwise stated.
   //
 
-  // First stash bytes into a buffer, then use BufferFlush() to flush all bytes to the device.
-  // If there are not enough space in the buffer, it will return a none zero value, and the buffer
-  // is unchanged.
-  static constexpr int kBufferSize = 512;
-  void BufferClear();
-  int BufferByte(uint8_t data);
-  int BufferBytes(std::span<const uint8_t> data);
-  int BufferFlush();
+  // First stash bytes into a buffer, then use BufferFlush() to flush all bytes to the
+  // device. If there are not enough space in the buffer, it will return an error, and the
+  // buffer is unchanged. Use the Write() function to avoid extra copy.
+  static constexpr int kBufferSize = 4096;  // FT2232's internal buffer is 4K.
+  void BufferClear() { buffer_used_ = 0; }
+  Status BufferByte(uint8_t data);
+  Status BufferBytes(std::span<const uint8_t> data);
+  Status BufferBytes(std::initializer_list<uint8_t> data);
+  // Buffer content is unchanged if Flush errors.
+  Status BufferFlush();
+
+  // Bypass the buffer and write directly to the device.
+  // Return an error if the buffer is not empty.
+  Status Write(const void *buf, int32_t len);
 
   // Wrapper around ftdi_read_data()
-  // Return -1 if error, 0 if success
-  int Read(void* buf, int32_t len);
+  Status Read(void *buf, int32_t len,
+              std::chrono::duration<double> timeout = std::chrono::milliseconds(1));
 
   // Wait for "Transmitter empty" bit set. Return 0 if ok, -1 if error, -2 if timeout.
-  int WaitTransmitterEmpty(uint32_t timeout_ms = 1000);
+  Status WaitTransmitterEmpty(uint32_t timeout_ms = 1000);
 
   // Synchronize the MPSSE state, must be run before other MPSSE commands.
   // Note the implementation isn't identical to AN_135
-  int MpsseSync();
-  int MpsseSetClockFreq(float khz, bool three_phase, bool adaptive);
+  Status MpsseSync();
+  Status MpsseSetClockFreq(float khz, bool three_phase, bool adaptive);
 
+  // Will append command to the existing buffer and flush.
+  // Buffer will be in an unspecified state if error.
+  //
   // State:     1=high   0=low
   // Direction: 1=output 0=input
   // bit[x]:    ADBUSx
-  // Return -1 if error.
-  int MpsseSetLowerPins(uint8_t state, uint8_t dir);
+  //
+  // TODO reword
+  // only low 4 bits are effective
+  Status MpsseSetLowerPins(uint8_t state, uint8_t dir, bool flush=true);
+  // TODO
+  // only high 4 bits are effective
+  Status GpioSetLowerPins(uint8_t state, uint8_t dir, bool flush=true);
 
 private:
-  struct ftdi_context *const context_;
+  std::unique_ptr<struct ftdi_context, decltype(&FreeContext)> context_;
   uint8_t buffer_[kBufferSize];
-  uint32_t buffer_len_ = 0;
+  uint32_t buffer_used_ = 0;
+
+  uint8_t low_pin_state_=0;
+  uint8_t low_pin_dir_=0;
 };
 
+// ==================== //
+//  I2C Interface Class //
+// ==================== //
+//
+// It should be obvious that it's invalid to interleave the use of the same FtdiDevice.
+//
 // Pins for I2C
 // SCL -> ADBUS0
 // SDA -> ADBUS1 and ADBUS2
 // Remember to add the pull up resistor if your dongle don't have one.
 class MpsseI2c {
 public:
-  // It should be obvious that it's invalid to interleave the use of the same FtdiDevice.
   // I2C typically run on 100 or 400 kHz.
+  // Postcond after Create: SDA & SCL both hold high. (aka idle state)
   static std::unique_ptr<MpsseI2c> Create(FtdiDevice *dev, float scl_khz = 400);
   virtual ~MpsseI2c();
 
@@ -89,41 +154,40 @@ public:
 
   // Precond: SDA & SCL hold high.
   // Postcond: SDA & SCL hold low.
-  // Return 0 if success, -1 if any error occurs
   //
   // SDA ‾‾\____
   // SCL ‾‾‾‾\__
-  int Start();
+  Status Start();
 
   // Precond: SDA & SCL hold low.
   // Postcond: SDA & SCL hold low.
-  // Return 0 if success, -1 if any error occurs
   // Do a repeated start.
   //
   // SDA ___/‾‾‾\___
   // SCL _____/‾‾‾\__
-  int Restart();
+  Status Restart();
 
   // Precond: SDA & SCL hold low.
   // Postcond: SDA & SCL hold high.
-  // Return 0 if success, -1 if any error occurs
   // First bring SCL high, then bring SDA high while SCL is high to signal a stop.
   //
   // SDA ____/‾‾
   // SCL __/‾‾‾‾
-  int Stop();
+  Status Stop();
 
   // Precond: SDA & SCL hold low.
   // Postcond: SDA & SCL hold low.
   // Clock out 8bits (MSBit first), then immediately read one ack bit.
-  // Returns 1 if ACK, or 0 if NACK. -1 if error occurs.
-  int WriteByte(uint8_t data);
+  //
+  // Set *ack to TRUE if ACK is received. Set to NULL if you don't care about ack bit.
+  Status WriteByte(uint8_t data, bool *ack);
 
   // Precond: SDA & SCL hold low.
   // Postcond: SDA & SCL hold low.
   // Clock in n bytes, send an ACK for first n-1 bytes, and send a NACK for last byte.
-  // Return 0 if ok, -1 if failure.
-  int ReadBytes(uint16_t len, void* buf);
+  // Limited to 320 bytes to avoid overflow the buffer.
+  // If you really need to read that many data, call the function multiple times.
+  Status ReadBytes(uint16_t len, void* buf);
 
   // Precond: SDA & SCL hold high.
   // Postcond: SDA & SCL hold high.
@@ -132,18 +196,14 @@ public:
   // - txlen>0 and rxlen=0  : Start-IssueWrAddr-WriteBytes-Stop
   // - txlen>0 and rxlen>0  : Start-IssueWrAddr-WriteBytes-Restart-IssueRdAddr-ReadBytes-Stop
   // If a len is zero, the corresponding data can be nullptr.
-  //
-  // Return 0 if ok, -1 if failure, -2 if get NACK when ACK is expected.
-  int Transaction(uint8_t addr7, const uint8_t* tx_data, int tx_len, void* rx_buf, int rx_len);
+  Status Transaction(uint8_t addr7, const uint8_t* tx_data, int tx_len, void* rx_buf, int rx_len);
 
 private:
   explicit MpsseI2c(FtdiDevice* dev) : dev_(dev) {}
-
-  // For comments on private functions, see cpp file.
-  int InitializePins();
-
   FtdiDevice* const dev_;
 };
+
+/*
 
 // Only one pin required.
 // DATA <- ADBUS1
@@ -205,4 +265,8 @@ private:
   const int cpha_;
 };
 
+*/
+
 } // namespace mpsse_protocol
+
+#endif // __MPSSE_PROTOCOL_H__
