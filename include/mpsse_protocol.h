@@ -261,7 +261,24 @@ private:
   FtdiDevice* const dev_;
 };
 
-/*
+// ===================== //
+//  SPI Interface Class  //
+// ===================== //
+//
+// Walkaround for SPI Modes:
+//     Mode 0: Use normal two phase CLOCK, WRITE_NEG, READ_POS
+//      CLK    __/‾‾\__/‾‾\          __/‾‾\__/‾‾\_
+//     MOSI    <===> <===>   MISO    <===> <===>
+//
+//     Mode 1: Cannot use two phase clock. WRITE_POS is invalid when clock is idle low.
+//             Use three phase clock to mimic, we need to read one more bit and discard the first read.
+//     (BAD)  CLK    __/‾‾\__/‾‾\_
+//     (BAD) MOSI       <===> <===>
+//
+//      CLK          __/‾‾\_____/‾‾\__       __/‾‾\_____/‾‾\_____/‾‾\__
+//     MOSI          <====^=> <====^=>  MISO XX <======> <======> XXXXX
+//                                            ^-bogus  ^-bit0   ^-bit1
+//
 // Pins for SPI
 // ADBUS0: CLK. Connect to CLK pin on peripherals.
 // ADBUS1: MOSI. Connect to MOSI or SDI (serial data in) pin on peripherals.
@@ -285,7 +302,7 @@ public:
   //
   // tx_len: bytes to transmit, can be zero.
   // rx_len: bytes to receive, can be zero.
-  int Transaction(const void* tx_data, int tx_len, void* rx_data, int rx_len);
+  Status Transaction(const void* tx_data, int tx_len, void* rx_data, int rx_len);
 
 private:
   explicit MpsseSpi(FtdiDevice* dev, int cpol, int cpha) :
@@ -295,8 +312,6 @@ private:
   const int cpol_;
   const int cpha_;
 };
-
-*/
 
 } // namespace mpsse_protocol
 
