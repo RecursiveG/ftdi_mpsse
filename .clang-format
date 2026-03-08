@@ -1,0 +1,6 @@
+---
+BasedOnStyle: LLVM
+ColumnLimit: '105'
+IndentWidth: '2'
+AllowShortIfStatementsOnASingleLine: WithoutElse
+...

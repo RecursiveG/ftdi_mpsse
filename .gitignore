@@ -1,3 +1,4 @@
 .vscode/
 bak/
 libftdi1-1.5/
+*.o
