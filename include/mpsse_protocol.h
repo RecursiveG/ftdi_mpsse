@@ -9,6 +9,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <initializer_list>
 
 namespace mpsse_protocol {
 
@@ -124,6 +125,33 @@ private:
   uint8_t low_pin_dir_=0;
 };
 
+
+// =================================== //
+// MPSSE data TX clock edge limitation //
+// =================================== //
+//
+// In MPSSE, you have the option to specify MPSSE_WRITE_NEG or MPSSE_READ_NEG.
+// However, you must use the correct one depending on the idle state of the clock.
+// Otherwise the MPSSE will misbehave.
+//
+// If clock idle at ... you must use
+// LOW                  WRITE_NEG  or  READ_POS
+// HIGH                 WRITE_POS  or  READ_NEG
+//
+//                         2-phase-clk      3-phase-clk
+// clk-idle-low            __/‾‾\__/‾‾\    __/‾‾\_____/‾‾\__
+// data-write-neg          <=1=> <=2=>     <=1====> <=2====>
+//
+// clk-idle-high           ‾‾\__/‾‾\__/    ‾‾\__/‾‾‾‾‾\__/‾‾
+// data-write-pos          <=1=> <=2=>     <=1====> <=2====>
+//
+// e.g. For I2C, the TX data must be stable when clock is high, so we have to use idle-low
+//      clocking, and should always use WRITE_NEG and never use READ_NEG.
+#define MPSSE_IDLE_LOW_WRITE  (MPSSE_DO_WRITE | MPSSE_WRITE_NEG)
+#define MPSSE_IDLE_HIGH_WRITE (MPSSE_DO_WRITE)
+#define MPSSE_IDLE_LOW_READ   (MPSSE_DO_READ)
+#define MPSSE_IDLE_HIGH_READ  (MPSSE_DO_READ | MPSSE_READ_NEG)
+
 // ==================== //
 //  I2C Interface Class //
 // ==================== //
@@ -203,8 +231,10 @@ private:
   FtdiDevice* const dev_;
 };
 
-/*
-
+// ===================== //
+//  WS2812B one-wire LED //
+// ===================== //
+//
 // Only one pin required.
 // DATA <- ADBUS1
 // The frequency is set to 2.5MHz and use the data pin to simulate the required timing.
@@ -219,18 +249,19 @@ public:
 
   // Change color of multiple LEDs. One number for one LED, in that order.
   // Every number represent the RGB value of that LED. Top 8 bits are ignored. Blue in LSB.
-  int SendFrame(std::span<const uint32_t> rgb);
+  Status SendFrame(std::span<const uint32_t> rgb);
 private:
   explicit MpsseWs2812b(FtdiDevice* dev) : dev_(dev) {}
 
   // Expand one byte to 3 bytes. 0 map to 0b100, 1 map to 0b110. buf is assumed to have size 3.
   static void ExpandByte(uint8_t byte, uint8_t buf[]);
   // Send raw data, all bits must be either "100" or "110". In GRB order. Last bit must be zero.
-  int SendRaw(std::span<const uint8_t> raw);
+  Status SendRaw(std::span<const uint8_t> raw);
 
   FtdiDevice* const dev_;
 };
 
+/*
 // Pins for SPI
 // ADBUS0: CLK. Connect to CLK pin on peripherals.
 // ADBUS1: MOSI. Connect to MOSI or SDI (serial data in) pin on peripherals.

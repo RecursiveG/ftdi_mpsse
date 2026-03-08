@@ -86,30 +86,6 @@ Status MpsseI2c::Stop() {
   return Status::Ok();
 }
 
-// MPSSE data TX clock edge limitation:
-//
-// In MPSSE, you have the option to specify MPSSE_WRITE_NEG or MPSSE_READ_NEG.
-// However, you must use the correct one depending on the idle state of the clock.
-// Otherwise the MPSSE will misbehave.
-//
-// If clock idle at ... you must use
-// LOW                  WRITE_NEG  or  READ_POS
-// HIGH                 WRITE_POS  or  READ_NEG
-//
-//                         2-phase-clk      3-phase-clk
-// clk-idle-low            __/‾‾\__/‾‾\    __/‾‾\_____/‾‾\__
-// data-write-neg          <=1=> <=2=>     <=1====> <=2====>
-//
-// clk-idle-high           ‾‾\__/‾‾\__/    ‾‾\__/‾‾‾‾‾\__/‾‾
-// data-write-pos          <=1=> <=2=>     <=1====> <=2====>
-//
-// e.g. For I2C, the TX data must be stable when clock is high, so we have to use idle-low
-//      clocking, and should always use WRITE_NEG and never use READ_NEG.
-#define MPSSE_IDLE_LOW_WRITE  (MPSSE_DO_WRITE | MPSSE_WRITE_NEG)
-#define MPSSE_IDLE_HIGH_WRITE (MPSSE_DO_WRITE)
-#define MPSSE_IDLE_LOW_READ   (MPSSE_DO_READ)
-#define MPSSE_IDLE_HIGH_READ  (MPSSE_DO_READ | MPSSE_READ_NEG)
-
 Status MpsseI2c::WriteByte(uint8_t data, bool *ack) {
   uint8_t cmd_write_byte[] = {
     // Transfer 8 bits.

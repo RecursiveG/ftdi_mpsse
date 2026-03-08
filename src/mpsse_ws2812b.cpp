@@ -1,5 +1,24 @@
 #include "mpsse_protocol.h"
 
+#include <cstdint>
+#include <cstdio>
+#include <ftdi.h>
+#include <memory>
+
+#define RETURN_IF(cond, ret, fmt, ...)                                                                  \
+  do {                                                                                                  \
+    if (cond) {                                                                                         \
+      std::fprintf(stderr, fmt "\n", ##__VA_ARGS__);                                                    \
+      return (ret);                                                                                     \
+    }                                                                                                   \
+  } while (0)
+
+#define RETURN_IF_ERR(st)                                                                               \
+  do {                                                                                                  \
+    Status s = (st);                                                                                    \
+    if (!s.ok()) return s;                                                                              \
+  } while (0)
+
 namespace mpsse_protocol {
 
 std::unique_ptr<MpsseWs2812b> MpsseWs2812b::Create(FtdiDevice *dev) {
@@ -8,18 +27,18 @@ std::unique_ptr<MpsseWs2812b> MpsseWs2812b::Create(FtdiDevice *dev) {
   // Use the desctructor to cleanup the bitmode setting.
   auto ret = std::unique_ptr<MpsseWs2812b>(new MpsseWs2812b(dev));
 
-  err = dev->MpsseSync();
-  RETURN_IF(err != 0, nullptr, "MpsseSync() failed: %d", err);
+  Status st = dev->MpsseSync();
+  RETURN_IF(!st.ok(), nullptr, "MpsseSync() failed: %s", st.human().c_str());
 
-  err = dev->MpsseSetClockFreq(2500, /*three_phase=*/false, /*adaptive=*/false);
-  RETURN_IF(err != 0, nullptr, "MpsseSetClockFreq() failed: %d", err);
+  st = dev->MpsseSetClockFreq(2500, /*three_phase=*/false, /*adaptive=*/false);
+  RETURN_IF(!st.ok(), nullptr, "MpsseSetClockFreq() failed: %s", st.human().c_str());
 
   dev->BufferClear();
-  err = dev->MpsseSetLowerPins(
+  st = dev->MpsseSetLowerPins(
     /*state=*/ 0b0000'0000,  // idle-low clock.
     /*dir=*/   0b0000'0011
   );
-  RETURN_IF(err != 0, nullptr, "MpsseSetLowerPins() failed: %d", err);
+  RETURN_IF(!st.ok(), nullptr, "MpsseSetLowerPins() failed: %s", st.human().c_str());
 
   return ret;
 }
@@ -46,7 +65,7 @@ void MpsseWs2812b::ExpandByte(uint8_t byte, uint8_t buf[]) {
   buf[2] |= (byte & 0x01) ? 0x06 : 0x04;
 }
 
-int MpsseWs2812b::SendFrame(std::span<const uint32_t> rgb) {
+Status MpsseWs2812b::SendFrame(std::span<const uint32_t> rgb) {
   auto raw = std::make_unique<uint8_t[]>(rgb.size() * 9);
   // WS2812B wants the 3 bytes in GRB order.
   for (size_t i = 0; i < rgb.size() ; i++) {
@@ -57,25 +76,23 @@ int MpsseWs2812b::SendFrame(std::span<const uint32_t> rgb) {
   return SendRaw({raw.get(), rgb.size()*9});
 }
 
-int MpsseWs2812b::SendRaw(std::span<const uint8_t> raw) {
-  uint8_t header[3];
-  header[0] = MPSSE_IDLE_LOW_WRITE;
-  header[1] = (raw.size()-1) & 0xff;
-  header[2] = ((raw.size()-1) >> 8) & 0xff;
+Status MpsseWs2812b::SendRaw(std::span<const uint8_t> raw) {
+  // Header for writing bytes.
+  RETURN_IF_ERR(dev_->BufferBytes({
+    MPSSE_IDLE_LOW_WRITE,
+    static_cast<uint8_t>( (raw.size()-1)       & 0xff),
+    static_cast<uint8_t>(((raw.size()-1) >> 8) & 0xff)
+  }));
+  RETURN_IF_ERR(dev_->BufferFlush());
+
+  // Because the data array can be huge, we use unbuffered write.
+  RETURN_IF_ERR(dev_->Write(raw.data(), raw.size()));
+
   // Last bit must be zero. Clock 128bits to signal a reset.
-  uint8_t resetcmd[] = {CLK_BYTES, 16, 0};
+  RETURN_IF_ERR(dev_->BufferBytes({CLK_BYTES, 16, 0}));
+  RETURN_IF_ERR(dev_->BufferFlush());
 
-  int err = 0;
-  err = dev_->BufferBytes(header); if (err) return -1;
-  err = dev_->BufferFlush(); if (err) return -1;
-
-  // Because the data array can be huge, we use ftdi_write_data() directly.
-  err = ftdi_write_data(dev_->context(), raw.data(), raw.size());
-  RETURN_IF(err != raw.size(), -1, "ftdi_write_data() failed: expect %zu got %d", raw.size(), err);
-
-  err = dev_->BufferBytes(resetcmd); if (err) return -1;
-  err = dev_->BufferFlush(); if (err) return -1;
-  return 0;
+  return Status::Ok();
 }
 
-}
+} // namespace mpsse_protocol

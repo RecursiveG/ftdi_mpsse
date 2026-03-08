@@ -2,10 +2,11 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <format>
 #include <ftdi.h>
-#include <functional>
+#include <initializer_list>
 #include <memory>
 #include <span>
 #include <thread>
