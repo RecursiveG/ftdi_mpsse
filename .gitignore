@@ -2,3 +2,5 @@
 bak/
 libftdi1-1.5/
 *.o
+examples/*
+!examples/*.cpp
