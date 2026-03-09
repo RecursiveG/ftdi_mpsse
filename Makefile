@@ -5,6 +5,7 @@ src/%.o: Makefile src/%.cpp include/mpsse_protocol.h
 
 examples/mcp9808: src/ftdi_device.o src/mpsse_i2c.o
 examples/ws2812b: src/ftdi_device.o src/mpsse_ws2812b.o
+examples/max31856: src/ftdi_device.o src/mpsse_spi.o
 
 # No address sanitizer for test
 ftdi_test: ftdi_test.cpp mpsse_protocol.cpp mpsse_protocol.h
