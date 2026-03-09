@@ -193,8 +193,8 @@ Status FtdiDevice::MpsseSync() {
     ret = ftdi_read_data(context_.get(), buf, kBufSize);
     if (ret < 0) return Status::Err(std::format("ftdi_read_data() failed: {}", ret));
     if (ret > 0) {
-      // TODO: maybe bug around fmin?
-      for (int i = 0; i < std::fmin(ret, 4); i++) {
+      // Technically we don't need to shift all bytes and only needs buf[ret-4:].
+      for (int i = 0; i < ret; i++) {
         // Sliding window looking for the last 4 bytes returned.
         in_data = (in_data << 8) | buf[i];
       }
