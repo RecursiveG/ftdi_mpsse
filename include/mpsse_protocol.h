@@ -102,19 +102,29 @@ public:
   Status MpsseSync();
   Status MpsseSetClockFreq(float khz, bool three_phase, bool adaptive);
 
-  // Will append command to the existing buffer and flush.
-  // Buffer will be in an unspecified state if error.
+  // Helper functions for controlling the lower 8 pins.
+  // Users SHOULD NOT use functions here and SHOULD use MpsseGpio class instead!
+  //
+  // This is convoluted because MPSSE doesn't support masking and must change
+  // 8 pins at once. So the masking and memorization is done from software.
+  // The lower 4 pins should generally controlled by the MPSSE.
+  // The high 4 pins may be used by the user as GPIOs.
+
+  // Append command to the existing buffer and optionally flush.
+  // Buffer will be in an unspecified state if error happens.
   //
   // State:     1=high   0=low
   // Direction: 1=output 0=input
   // bit[x]:    ADBUSx
-  //
-  // TODO reword
-  // only low 4 bits are effective
-  Status MpsseSetLowerPins(uint8_t state, uint8_t dir, bool flush=true);
-  // TODO
-  // only high 4 bits are effective
-  Status GpioSetLowerPins(uint8_t state, uint8_t dir, bool flush=true);
+  // Mask: which pins should be changed
+  Status MpsseUpdateLowerPins(uint8_t state, uint8_t dir, uint8_t mask, bool flush);
+  // Shortcut for controlling the lower 4 bits.
+  Status MpsseSetLowerPins(uint8_t state, uint8_t dir) {
+    return MpsseUpdateLowerPins(state, dir, 0xf, /*flush=*/true);
+  }
+  Status MpsseBufferLowerPins(uint8_t state, uint8_t dir) {
+    return MpsseUpdateLowerPins(state, dir, 0xf, /*flush=*/false);
+  }
 
 private:
   std::unique_ptr<struct ftdi_context, decltype(&FreeContext)> context_;

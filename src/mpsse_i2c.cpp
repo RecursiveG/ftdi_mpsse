@@ -87,45 +87,38 @@ Status MpsseI2c::Stop() {
 }
 
 Status MpsseI2c::WriteByte(uint8_t data, bool *ack) {
-  uint8_t cmd_write_byte[] = {
-    // Transfer 8 bits.
+  // Transfer 8 bits.
+  RETURN_IF_ERR(dev_->BufferBytes({
     MPSSE_IDLE_LOW_WRITE | MPSSE_BITMODE,
     0x7,  // 0x7 == 8 bits
     data,  // the byte
-  };
-  RETURN_IF_ERR(dev_->BufferBytes(cmd_write_byte));
-  RETURN_IF_ERR(dev_->MpsseSetLowerPins(
-    // Both SDA and SCL should be LOW now, set ADBUS1 to INPUT mode so ADBUS2 can read the ack.
-    // Time gap is not needed since the write should hold the data for 1/3 cycle after the pulse.
+  }));
+  // Both SDA and SCL should be LOW now, set ADBUS1 to INPUT mode so ADBUS2 can read the ack.
+  // Time gap is not needed since the write should hold the data for 1/3 cycle after the pulse.
+  RETURN_IF_ERR(dev_->MpsseBufferLowerPins(
     0b00000000,
-    0b00000001,
-    /*flush=*/ false
+    0b00000001
   ));
-  uint8_t cmd_read_bit[] = {
-    // Read ACK bit
-    // Time gap is not needed before nor after because the clock should extend 1/3 cycle each direction.
+  // Read ACK bit
+  // Time gap is not needed before nor after because the clock should extend 1/3 cycle each direction.
+  RETURN_IF_ERR(dev_->BufferBytes({
     MPSSE_IDLE_LOW_READ | MPSSE_BITMODE,
     0,  // 0 = 1bit
-  };
-  RETURN_IF_ERR(dev_->BufferBytes(cmd_read_bit));
-  RETURN_IF_ERR(dev_->BufferByte(
-    // Ask device to flush data back to PC, so the ftdi_read_byte below can be fast.
-    SEND_IMMEDIATE
-  ));
-  RETURN_IF_ERR(dev_->MpsseSetLowerPins(
-    // Immediately take back the control of the SDA line and hold it low.
-    // This step can in theory be postponsed and be done before the next write, or omitted if an i2c read follows.
-    // But for simplicity of the reasoning about the pre/post cond, it's left here.
+  }));
+  // Ask device to flush data back to PC, so the ftdi_read_byte below can be fast.
+  RETURN_IF_ERR(dev_->BufferByte(SEND_IMMEDIATE));
+  // Immediately take back the control of the SDA line and hold it low.
+  // This step can in theory be postponsed and be done before the next write, or omitted if an i2c read follows.
+  // But for simplicity of the reasoning about the pre/post cond, it's left here.
+  RETURN_IF_ERR(dev_->MpsseBufferLowerPins(
     0b00000000,
-    0b00000011,
-    /*flush=*/ false
+    0b00000011
   ));
-
+  // Execute the sequence
   RETURN_IF_ERR(dev_->BufferFlush());
-
+  // Read the ack bit back.
   uint8_t ack_bit;
   RETURN_IF_ERR(dev_->Read(&ack_bit, 1));
-
   if (ack) {
     // Low is ACK, high is NACK
     *ack = (ack_bit & 0x1) == 0;
@@ -140,13 +133,13 @@ Status MpsseI2c::ReadBytes(uint16_t len, void* buf) {
   // All operations can be done continuously without time gap in between.
   for (int i = 0; i < len; ++i) {
     // Release SDA line for reading.
-    RETURN_IF_ERR(dev_->MpsseSetLowerPins(0b00000000, 0b00000001, false));
+    RETURN_IF_ERR(dev_->MpsseBufferLowerPins(0b00000000, 0b00000001));
 
     // READ 1 byte, 0x7=8bits
     RETURN_IF_ERR(dev_->BufferBytes({MPSSE_IDLE_LOW_READ | MPSSE_BITMODE , 0x7}));
 
     // Re-acquire SDA
-    RETURN_IF_ERR(dev_->MpsseSetLowerPins(0b00000000, 0b00000011, false));
+    RETURN_IF_ERR(dev_->MpsseBufferLowerPins(0b00000000, 0b00000011));
 
     // Clock out the ACK or NACK.
     // Note for I2C, high(1) is NACK.

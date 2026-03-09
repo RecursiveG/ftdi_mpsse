@@ -233,25 +233,11 @@ Status FtdiDevice::MpsseSetClockFreq(float khz, bool three_phase, bool adaptive)
   return ret;
 }
 
-Status FtdiDevice::MpsseSetLowerPins(uint8_t state, uint8_t dir, bool flush) {
-  // Only change the low 4 bits.
-  low_pin_state_ = (low_pin_state_ & 0xf0) | (state & 0x0f);
-  low_pin_dir_ = (low_pin_dir_ & 0xf0) | (dir & 0x0f);
-  uint8_t cmd[] = {SET_BITS_LOW, low_pin_state_, low_pin_dir_};
-
-  auto st = BufferBytes(cmd);
-  if (!st.ok()) return st;
-  if (flush) return BufferFlush();
-  return Status::Ok();
-}
-
-Status FtdiDevice::GpioSetLowerPins(uint8_t state, uint8_t dir, bool flush) {
-  // Only change the high 4 bits.
-  low_pin_state_ = (low_pin_state_ & 0x0f) | (state & 0xf0);
-  low_pin_dir_ = (low_pin_dir_ & 0x0f) | (dir & 0xf0);
-  uint8_t cmd[] = {SET_BITS_LOW, low_pin_state_, low_pin_dir_};
-
-  auto st = BufferBytes(cmd);
+Status FtdiDevice::MpsseUpdateLowerPins(uint8_t state, uint8_t dir, uint8_t mask, bool flush) {
+  const uint8_t inv_mask = ~mask;
+  low_pin_state_ = (low_pin_state_ & inv_mask) | (state & mask);
+  low_pin_dir_   = (low_pin_dir_   & inv_mask) | (dir   & mask);
+  auto st = BufferBytes({SET_BITS_LOW, low_pin_state_, low_pin_dir_});
   if (!st.ok()) return st;
   if (flush) return BufferFlush();
   return Status::Ok();
