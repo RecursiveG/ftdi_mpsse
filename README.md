@@ -10,6 +10,7 @@ Implemented protocols:
   - Tested on a light strip with 144 LEDs.
 - SPI
   - Example: MAX31856 Thermocouple amplifier.
+  - Example: Winbond W25Q SPI Flash.
 
 Note about USB device address:
 - Every USB device is on some bus, and is assigned a unique device number on that bus.
