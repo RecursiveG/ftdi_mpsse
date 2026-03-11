@@ -11,6 +11,7 @@ Implemented protocols:
 - SPI
   - Example: MAX31856 Thermocouple amplifier.
   - Example: Winbond W25Q SPI Flash.
+  - Example: ST7796S LCD screen.
 
 Note about USB device address:
 - Every USB device is on some bus, and is assigned a unique device number on that bus.

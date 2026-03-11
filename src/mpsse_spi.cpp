@@ -37,6 +37,7 @@ std::unique_ptr<MpsseSpi> MpsseSpi::Create(FtdiDevice *dev, int cpol, int cpha, 
   return ret;
 }
 
+// TODO: revise all the flushes in this function.
 Status MpsseSpi::Transaction(const void* tx_data, int tx_len, void* rx_data, int rx_len) {
   if (tx_len == 0 && rx_len == 0) return Status::Err("tx & rx len cannot be both zero.");
 

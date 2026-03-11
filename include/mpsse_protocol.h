@@ -135,6 +135,23 @@ private:
   uint8_t low_pin_dir_=0;
 };
 
+class MpsseGpio {
+public:
+  MpsseGpio(FtdiDevice *dev, uint8_t available_low_pins)
+      : dev_(dev), available_low_pins_(available_low_pins) {}
+
+  Status SetLowerPins(uint8_t state, uint8_t dir) {
+    return dev_->MpsseUpdateLowerPins(state, dir, available_low_pins_, /*flush=*/true);
+  }
+
+  Status BufferLowerPins(uint8_t state, uint8_t dir) {
+    return dev_->MpsseUpdateLowerPins(state, dir, available_low_pins_, /*flush=*/false);
+  }
+
+private:
+  FtdiDevice *dev_;
+  uint8_t available_low_pins_;
+};
 
 // =================================== //
 // MPSSE data TX clock edge limitation //
@@ -313,6 +330,9 @@ public:
   // tx_len: bytes to transmit, can be zero.
   // rx_len: bytes to receive, can be zero.
   Status Transaction(const void* tx_data, int tx_len, void* rx_data, int rx_len);
+
+  // Return the GPIO controller for the remaining 4 pins of the lower pin bank.
+  MpsseGpio Gpio() { return {dev_, 0xf0}; }
 
 private:
   explicit MpsseSpi(FtdiDevice* dev, int cpol, int cpha) :
