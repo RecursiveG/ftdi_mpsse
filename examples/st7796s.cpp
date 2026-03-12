@@ -175,7 +175,7 @@ std::vector<uint8_t> LoadPicture(std::string path) {
   DIE_IF(src.empty(), "cannot open image");
 
   if (src.cols > src.rows) {
-    src = src.t();
+    cv::rotate(src, src, cv::ROTATE_90_COUNTERCLOCKWISE);
   }
 
   // Calculate aspect ratio and scaling
@@ -224,8 +224,9 @@ int main(int argc, char *argv[]) {
   std::unique_ptr<FtdiDevice> dev = FtdiDevice::OpenVendorProduct(0x0403, 0x6010, INTERFACE_A);
   DIE_IF(dev == nullptr, "Cannot open dev");
   // Id read command gives wrong data at 15MHz
-  // Max: 12 * 1e6 / (320*480*2*8) = 4.8fps
-  std::unique_ptr<MpsseSpi> spi = MpsseSpi::Create(dev.get(), 0, 0, 12);
+  // The next available is 10MHz
+  // Max: 10 * 1e6 / (320*480*2*8) = 4fps
+  std::unique_ptr<MpsseSpi> spi = MpsseSpi::Create(dev.get(), 0, 0, 10);
   DIE_IF(spi == nullptr, "Cannot open SPI");
   MpsseGpio gpio = spi->Gpio();
 
