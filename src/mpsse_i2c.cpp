@@ -178,7 +178,7 @@ Status MpsseI2c::Transaction(uint8_t addr7,
     if (!ack) return Status::Err("No ack from device");
     for (int i = 0; i < tx_len; ++i) {
       RETURN_IF_ERR(WriteByte(tx_data[i], &ack));
-      if (!ack) return Status::Err("NACK before all data sent");
+      if (!ack && i < tx_len - 1) return Status::Err("NACK before all data sent");
     }
 
     if (rx_len == 0) return Status::Ok();  // No read. Issue Stop and return.
