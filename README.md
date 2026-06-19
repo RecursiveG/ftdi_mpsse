@@ -6,6 +6,7 @@ This repo uses [libftdi1](https://www.intra2net.com/en/developer/libftdi/index.p
 Implemented protocols:
 - I<sup>2</sup>C
   - Example: MCP9808 temperature sensor.
+  - Example: QG-2864KMBEG01 128x64 OLED display with SSD1306 controller.
 - WS2812B LED
   - Tested on a light strip with 144 LEDs.
 - SPI

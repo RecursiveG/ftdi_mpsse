@@ -3,6 +3,7 @@ LDFLAGS += $(shell pkg-config --libs libftdi1)
 
 src/%.o: Makefile src/%.cpp include/mpsse_protocol.h
 
+examples/ssd1306_oled: src/ftdi_device.o src/mpsse_i2c.o
 examples/i2c_cli: src/ftdi_device.o src/mpsse_i2c.o
 examples/i2c_cli: CXXFLAGS += $(shell pkg-config --cflags --libs libedit)
 examples/st7796s: CXXFLAGS += $(shell pkg-config --cflags --libs opencv4)
